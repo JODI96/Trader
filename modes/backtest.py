@@ -20,7 +20,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 import requests
 
@@ -57,39 +57,79 @@ class BacktestRunner:
 
     # ── Public ───────────────────────────────────────────────────────────────
 
-    def run(self, days: int) -> None:
+    def run(self, days: int, data_key: Optional[str] = None) -> None:
         self._quiet_stdout(logging.ERROR)   # suppress LOSS/WIN warnings on stdout; file log keeps all
         # Use lower leverage so the paper account lasts longer per cycle.
         # NN reward is in R-multiples so learning is unaffected.
         orig_leverage = config.LEVERAGE
         config.LEVERAGE = config.BACKTEST_LEVERAGE
         try:
-            self._run(days)
+            self._run(days, data_key)
         finally:
             config.LEVERAGE = orig_leverage
             self._quiet_stdout(logging.INFO)
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
-    def _run(self, days: int) -> None:
+    def _run(self, days: int, data_key: Optional[str] = None) -> None:
         bot = self._bot
-        end_ms   = int(time.time() * 1000)
-        start_ms = end_ms - days * 24 * 3600 * 1000
 
-        print(f"\n{'='*60}")
-        print(f"  BACKTEST  {config.SYMBOL}  {days} days")
-        print(f"{'='*60}")
+        if data_key:
+            # ── Load from local storage ───────────────────────────────────────
+            from data.historical_store import DatasetManager
+            mgr = DatasetManager(config.SYMBOL)
 
-        print("  Fetching 1m klines from Binance…", end=" ", flush=True)
-        klines_1m = self._fetch_klines("1m", start_ms, end_ms)
-        print(f"{len(klines_1m):,} candles")
+            label = mgr.dataset_info(data_key)
+            print(f"\n{'='*60}")
+            print(f"  BACKTEST  {config.SYMBOL}  [{label}]  (local data)")
+            print(f"{'='*60}")
 
-        print("  Fetching 15m klines from Binance…", end=" ", flush=True)
-        klines_15m = self._fetch_klines("15m", start_ms, end_ms)
-        print(f"{len(klines_15m):,} candles")
+            print(f"  Loading 1m klines from local storage…", end=" ", flush=True)
+            klines_1m = mgr.load(data_key, "1m")
+            if klines_1m is None:
+                print(f"\n  [ERROR] No local 1m data for key '{data_key}'.")
+                print(f"  Run:  python main.py --mode fetch --symbol {config.SYMBOL}")
+                return
+            print(f"{len(klines_1m):,} candles")
 
-        # Print NN config so you can verify what's running
-        nn = bot._nn_agent
+            print(f"  Loading 5m klines…", end=" ", flush=True)
+            klines_5m = mgr.load(data_key, "5m") or []
+            print(f"{len(klines_5m):,} candles")
+
+            print(f"  Loading 15m klines…", end=" ", flush=True)
+            klines_15m = mgr.load(data_key, "15m") or []
+            print(f"{len(klines_15m):,} candles")
+
+            # Compute actual days spanned by the local dataset
+            if klines_1m:
+                span_s = (int(klines_1m[-1][0]) - int(klines_1m[0][0])) / 1000
+                days   = max(1, int(span_s / 86400))
+
+        else:
+            # ── Fetch live from Binance API ───────────────────────────────────
+            end_ms   = int(time.time() * 1000)
+            start_ms = end_ms - days * 24 * 3600 * 1000
+
+            print(f"\n{'='*60}")
+            print(f"  BACKTEST  {config.SYMBOL}  {days} days")
+            print(f"{'='*60}")
+
+            print("  Fetching 1m klines from Binance…", end=" ", flush=True)
+            klines_1m = self._fetch_klines("1m", start_ms, end_ms)
+            print(f"{len(klines_1m):,} candles")
+
+            print("  Fetching 5m klines from Binance…", end=" ", flush=True)
+            klines_5m = self._fetch_klines("5m", start_ms, end_ms)
+            print(f"{len(klines_5m):,} candles")
+
+            print("  Fetching 15m klines from Binance…", end=" ", flush=True)
+            klines_15m = self._fetch_klines("15m", start_ms, end_ms)
+            print(f"{len(klines_15m):,} candles")
+
+        # Print mode + NN config
+        nn   = bot._nn_agent
+        mode_label = "TRAINING" if nn._training else "VALIDATE (inference only)"
+        print(f"\n  MODE: {mode_label}")
         print(f"\n  NN CONFIG:")
         print(f"    State dim  : {nn._state_dim}")
         print(f"    LR         : {nn.LR}")
@@ -109,6 +149,7 @@ class BacktestRunner:
         for k in klines_1m[:WARMUP]:
             c = self._to_candle(k)
             bot.mds.scalp_candles.append(c)
+            bot.mds.mtf_1m_candles.append(c)   # 1m MTF: same klines as scalp in backtest
             bot._warmup_indicators_scalp(c)
 
         htf_index = min(50, len(klines_15m))
@@ -116,6 +157,15 @@ class BacktestRunner:
             c = self._to_candle(k)
             bot.mds.htf_candles.append(c)
             bot._update_indicators_htf(c)
+
+        # Seed 5m MTF with the candles that precede the replay window
+        mtf_5m_index = 0
+        for i, k in enumerate(klines_5m):
+            if int(k[6]) < int(klines_1m[WARMUP][0]):   # close_time < first replay candle open
+                bot.mds.mtf_5m_candles.append(self._to_candle(k))
+                mtf_5m_index = i + 1
+            else:
+                break
 
         # ── Replay ───────────────────────────────────────────────────────────
         replay = klines_1m[WARMUP:]
@@ -141,6 +191,14 @@ class BacktestRunner:
                     flush=True,
                 )
 
+            # Deliver 5m MTF candles whose close_time has passed
+            while mtf_5m_index < len(klines_5m):
+                if int(klines_5m[mtf_5m_index][6]) < candle.ts:
+                    bot.mds.mtf_5m_candles.append(self._to_candle(klines_5m[mtf_5m_index]))
+                    mtf_5m_index += 1
+                else:
+                    break
+
             # Deliver 15m candles whose close_time has passed
             while htf_index < len(klines_15m):
                 htf_close_ms = int(klines_15m[htf_index][6])
@@ -151,6 +209,9 @@ class BacktestRunner:
                     htf_index += 1
                 else:
                     break
+
+            # 1m MTF: each 1m kline in the replay IS a 1m candle
+            bot.mds.mtf_1m_candles.append(candle)
 
             # Check open position exit BEFORE processing new candle
             if bot.sim_mode.positions:
@@ -178,8 +239,11 @@ class BacktestRunner:
             bot.sim_mode._close_position(bot.sim_mode.positions[0], last_price, "BE")
 
         # ── Save and summarise ────────────────────────────────────────────────
-        bot._nn_agent.save()
-        bot._param_tuner.save()
+        if bot._nn_agent._training:
+            bot._nn_agent.save()
+            bot._param_tuner.save()
+        else:
+            print("  [VALIDATE] Model weights not saved (inference-only run)")
 
         self._generate_plots(bot, days)
         self._print_summary(days, total, balance_resets, bot)

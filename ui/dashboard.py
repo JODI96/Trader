@@ -461,7 +461,10 @@ class Dashboard:
         t.append(f"PnL: {pnl:+.2f} USDT  │  ", style=pnl_color)
         t.append(f"Fees: -{fees:.4f}  │  ", style="yellow")
         t.append(f"Balance: ${bal:,.2f}  │  ", style="bold white")
-        t.append(f"Losses left: {rem}/{config.MAX_LOSSES}", style=losses_color)
+        if rem == 999:
+            t.append("Losses: no limit", style="dim")
+        else:
+            t.append(f"Losses left: {rem}/{config.MAX_LOSSES}", style=losses_color)
         if dd > 0:
             t.append(f"  │  MaxDD: {dd:.1%}", style="red")
 
@@ -473,9 +476,7 @@ class Dashboard:
         items = [
             ("Vol",       fstat.get("volume_ok", True)),
             ("News",      fstat.get("news_ok", True)),
-            ("Session",   fstat.get("session_time_ok", True)),
             ("Volatility",fstat.get("volatility_ok", True)),
-            ("Losses",    fstat.get("session_ok", True)),
         ]
         t = Text()
         t.append("  FILTERS: ", style="dim")

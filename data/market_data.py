@@ -1,5 +1,5 @@
 """
-market_data.py — Core data structures and 15s / 15min candle aggregation.
+market_data.py — Core data structures and 1m / 15m candle aggregation.
 
 CandleBuilder accepts raw RawTrade events (from aggTrade WebSocket stream)
 and emits completed Candle objects when a time-bucket boundary is crossed.
@@ -152,24 +152,33 @@ class CandleBuilder:
 
 class MarketDataStore:
     """
-    Rolling buffers of completed candles for the scalp (15s) and HTF (15min)
+    Rolling buffers of completed candles for the scalp (1m) and HTF (15m)
     timeframes.  Subscribers register callbacks that fire on each new candle.
     """
 
     def __init__(self):
-        self.scalp_candles: Deque[Candle] = deque(maxlen=config.LOOKBACK_CANDLES)
-        self.htf_candles:   Deque[Candle] = deque(maxlen=config.HTF_LOOKBACK)
+        self.scalp_candles:  Deque[Candle] = deque(maxlen=config.LOOKBACK_CANDLES)
+        self.htf_candles:    Deque[Candle] = deque(maxlen=config.HTF_LOOKBACK)
+        self.mtf_1m_candles: Deque[Candle] = deque(maxlen=config.MTF_1M_LOOKBACK)
+        self.mtf_5m_candles: Deque[Candle] = deque(maxlen=config.MTF_5M_LOOKBACK)
 
         self._scalp_callbacks: List[Callable[[Candle], None]] = []
         self._htf_callbacks:   List[Callable[[Candle], None]] = []
 
-        # Builders for both timeframes
+        # Builders for all timeframes
         self._scalp_builder = CandleBuilder(config.SCALP_TF_SEC,  self._on_scalp_candle)
         self._htf_builder   = CandleBuilder(config.HTF_TF_SEC,    self._on_htf_candle)
+        self._1m_builder    = CandleBuilder(60,  lambda c: self.mtf_1m_candles.append(c))
+        self._5m_builder    = CandleBuilder(300, lambda c: self.mtf_5m_candles.append(c))
 
         # Latest price (updated on every trade, not just candle close)
         self.last_price: float = 0.0
         self.last_trade_ts: float = 0.0
+
+        # Order book imbalance — updated by BinanceClient OBI polling thread.
+        # Range [-1, 1]: +1 = all bids (strong buy pressure), -1 = all asks.
+        # 0.0 = neutral / not yet polled / backtest mode.
+        self.obi: float = 0.0
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -184,6 +193,8 @@ class MarketDataStore:
         self.last_trade_ts = trade.timestamp_ms / 1000.0
         self._scalp_builder.process(trade)
         self._htf_builder.process(trade)
+        self._1m_builder.process(trade)
+        self._5m_builder.process(trade)
 
     def seed_from_klines(self, klines: list, timeframe: str = "scalp") -> None:
         """
@@ -194,7 +205,12 @@ class MarketDataStore:
         Each entry: [open_time, open, high, low, close, volume, ...,
                      taker_buy_base_asset_volume, ...]
         """
-        target = self.scalp_candles if timeframe == "scalp" else self.htf_candles
+        target = {
+            "scalp": self.scalp_candles,
+            "htf":   self.htf_candles,
+            "1m":    self.mtf_1m_candles,
+            "5m":    self.mtf_5m_candles,
+        }.get(timeframe, self.scalp_candles)
         for k in klines:
             vol      = float(k[5])
             buy_vol  = float(k[9])     # taker buy base asset volume
@@ -218,6 +234,8 @@ class MarketDataStore:
     def flush(self) -> None:
         self._scalp_builder.flush()
         self._htf_builder.flush()
+        self._1m_builder.flush()
+        self._5m_builder.flush()
 
     # ── Internal ────────────────────────────────────────────────────────────
 

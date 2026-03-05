@@ -24,7 +24,7 @@ class DeltaVolumeIndicator:
     "volume bubbles" — abnormally large directional volume spikes.
     """
 
-    WINDOW = 20   # rolling window for average delta calculation
+    WINDOW = 10   # rolling window for average delta calculation (10 × 1m = 10-min baseline)
 
     def __init__(self):
         self._deltas:     Deque[float] = deque(maxlen=self.WINDOW)

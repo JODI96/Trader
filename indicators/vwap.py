@@ -24,8 +24,8 @@ from data.market_data import Candle
 class VWAPIndicator:
     """
     Session VWAP with ±1/2/3σ bands.
-    Call `update(candle)` on each new scalp (15s) candle.
-    Call `update_htf(candle)` on each new HTF (15min) candle.
+    Call `update(candle)` on each new scalp (1m) candle.
+    Call `update_htf(candle)` on each new HTF (15m) candle.
     """
 
     def __init__(self):

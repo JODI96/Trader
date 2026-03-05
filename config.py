@@ -31,7 +31,7 @@ MAX_LOSSES         = int(os.getenv("MAX_LOSSES_PER_SESSION", "3"))
 FEE_TAKER          = float(os.getenv("FEE_TAKER", "0.0004"))  # 0.04% of margin, round-trip
 
 # ─── Timeframes (seconds) ──────────────────────────────────────────────────────
-SCALP_TF_SEC       = 15      # 15-second scalping candles
+SCALP_TF_SEC       = 60      # 1-minute scalping candles
 HTF_TF_SEC         = 900     # 15-minute context candles
 
 # ─── Indicator Parameters ──────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ ATR_PERIOD         = 14
 VWAP_BANDS         = [1.0, 2.0, 3.0]        # sigma multipliers
 VP_BINS            = 50                       # volume profile price buckets
 VP_VALUE_AREA_PCT  = 0.70                    # 70% of volume = value area
-LOOKBACK_CANDLES   = 200                     # 15s candles kept in memory
+LOOKBACK_CANDLES   = 200                     # 1m candles kept in memory (~3.3 h)
 HTF_LOOKBACK       = 100                     # 15min candles kept
 
 # ─── Strategy Thresholds ───────────────────────────────────────────────────────
@@ -52,18 +52,18 @@ SWEEP_REVERSAL_PCT = 0.03    # price must snap back 0.03% for sweep confirmation
 # ─── Filters ───────────────────────────────────────────────────────────────────
 LOW_VOLUME_FACTOR  = 0.5     # < 50% of 20-bar avg vol = skip
 NEWS_BUFFER_MIN    = 15      # minutes before/after high-impact news
-LOW_LIQUIDITY_UTC  = (12, 14)  # UTC hour range to avoid (12:00–14:00)
 
 # ─── Alerts ────────────────────────────────────────────────────────────────────
 ALERT_BEEP_COUNT   = int(os.getenv("ALERT_BEEP_COUNT", "3"))
 
 # ─── Neural Network ────────────────────────────────────────────────────────────
 # The NN is the sole trade decision maker.
-# It reads a 15-float state vector built from all indicators and outputs
+# It reads a 28-float state vector built from all indicators and outputs
 # HOLD / LONG / SHORT.  When LONG or SHORT fires and all filters pass,
 # an ATR-based SL/TP is calculated and the trade is opened.
 
 # SL distance = NN_SL_ATR_MULT × ATR  (TP = SL × MIN_RR_RATIO automatically)
+# 1.5× keeps TP reachable on 1m candles (4.5×ATR target vs 6×ATR at 2.0 which is too far).
 NN_SL_ATR_MULT     = float(os.getenv("NN_SL_ATR_MULT", "1.5"))
 
 # How many consecutive candles the LSTM sees as a sequence.
@@ -71,19 +71,22 @@ NN_SL_ATR_MULT     = float(os.getenv("NN_SL_ATR_MULT", "1.5"))
 NN_SEQ_LEN         = int(os.getenv("NN_SEQ_LEN", "10"))
 
 # Minimum candles to wait after a trade closes before opening another.
-# Prevents back-to-back trades that burn fees without giving the NN time to
-# observe the market. Default 5 candles (= 5 min on 1m backtest, 75s live).
-NN_TRADE_COOLDOWN  = int(os.getenv("NN_TRADE_COOLDOWN", "10"))
+# 20 candles = 20 minutes on 1m scalp — forces the model to observe the market
+# after each trade instead of immediately re-entering on the same bad setup.
+NN_TRADE_COOLDOWN  = int(os.getenv("NN_TRADE_COOLDOWN", "20"))
 
 # Leverage used during backtest — lower than live to reduce fee burn rate.
 # The NN reward is in R-multiples so it doesn't change what the NN learns,
 # but the paper account lasts 2.5x longer giving more training trades.
 BACKTEST_LEVERAGE  = int(os.getenv("BACKTEST_LEVERAGE", "3"))
 
-# In SIMULATION mode the session loss limit is disabled so the NN can keep
-# collecting experiences all day without being halted after 3 losses.
-# In ALERT / AUTO mode the limit is always enforced regardless of this flag.
-SIM_NO_LOSS_LIMIT  = os.getenv("SIM_NO_LOSS_LIMIT", "true").lower() == "true"
+# ─── Multi-timeframe ───────────────────────────────────────────────────────────
+MTF_1M_LOOKBACK    = 100   # 1-minute candles kept in memory
+MTF_5M_LOOKBACK    = 50    # 5-minute candles kept in memory
+
+# ─── Order Book ────────────────────────────────────────────────────────────────
+OBI_LEVELS         = 10    # depth levels used for order book imbalance calculation
+OBI_POLL_SEC       = 60    # how often (seconds) to refresh OBI via REST (1 per 1m candle)
 
 # ─── Backtesting ───────────────────────────────────────────────────────────────
 # Number of days of 1m historical klines to download when running --mode backtest.

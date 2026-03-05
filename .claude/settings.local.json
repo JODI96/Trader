@@ -17,7 +17,8 @@
       "Bash(xargs -r kill -9 sleep 2 echo \"Processes cleared\")",
       "Bash(xargs -r kill -TERM sleep 4 ls -la D:/PythonProjects/Trader/ml/model/)",
       "Bash(xargs -r kill -9 rm -f D:/PythonProjects/Trader/trader.pid sleep 2 echo \"Clean\" ls -la D:/PythonProjects/Trader/ml/model/)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(taskkill:*)"
     ]
   }
 }

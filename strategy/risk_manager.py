@@ -53,10 +53,10 @@ class RiskManager:
     def can_trade(self) -> tuple[bool, str]:
         """
         Returns (True, "") if trading is allowed, or (False, reason) if not.
-        In SIMULATION mode the session loss limit is skipped so the NN can
-        keep learning all day (controlled by config.SIM_NO_LOSS_LIMIT).
+        In SIMULATION mode there is no session loss limit — the NN keeps
+        learning all day regardless of how many losses occur.
         """
-        if self._sim_mode and config.SIM_NO_LOSS_LIMIT:
+        if self._sim_mode:
             if self.balance < self._initial_balance * 0.05:
                 return False, "Balance depleted"
             return True, ""
@@ -65,8 +65,8 @@ class RiskManager:
         return True, ""
 
     def losses_remaining(self) -> int:
-        if self._sim_mode and config.SIM_NO_LOSS_LIMIT:
-            return 999   # unlimited in sim learning mode
+        if self._sim_mode:
+            return 999   # unlimited in sim mode
         return max(0, config.MAX_LOSSES - self.session_losses)
 
     def reset_session(self) -> None:

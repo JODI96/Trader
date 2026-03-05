@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 # Binance Futures aggTrade stream endpoint (public, no auth needed)
 WS_BASE = "wss://fstream.binance.com/ws/{symbol}@aggTrade"
 
+# TYPE_CHECKING import avoids circular dependency at runtime
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from data.market_data import MarketDataStore
+
 
 class BinanceClient:
     """
@@ -181,6 +186,35 @@ class BinanceClient:
         )
         self._ws_thread.start()
         logger.info(f"aggTrade WebSocket thread started for {symbol}")
+
+    def start_obi_polling(self, symbol: str, mds: "MarketDataStore") -> None:
+        """
+        Background thread: polls Binance REST depth every OBI_POLL_SEC seconds
+        and writes the order book imbalance to mds.obi.
+
+        OBI = (total_bid_volume - total_ask_volume) / (total_bid_volume + total_ask_volume)
+        Range [-1, 1]:  +1 = all bids (strong buy pressure),  -1 = all asks.
+        Uses the top OBI_LEVELS price levels.  Silently ignored on testnet
+        if the endpoint is unavailable.
+        """
+        def _poll() -> None:
+            while self._ws_running:
+                try:
+                    depth   = self.rest.futures_order_book(
+                        symbol=symbol.upper(), limit=config.OBI_LEVELS
+                    )
+                    bid_vol = sum(float(b[1]) for b in depth.get("bids", []))
+                    ask_vol = sum(float(a[1]) for a in depth.get("asks", []))
+                    total   = bid_vol + ask_vol
+                    if total > 0:
+                        mds.obi = (bid_vol - ask_vol) / total
+                except Exception as e:
+                    logger.debug(f"OBI poll failed: {e}")
+                time.sleep(config.OBI_POLL_SEC)
+
+        t = threading.Thread(target=_poll, daemon=True, name="obi-poll")
+        t.start()
+        logger.info(f"OBI polling started ({config.OBI_LEVELS} levels, every {config.OBI_POLL_SEC}s)")
 
     def stop_stream(self) -> None:
         self._ws_running = False
