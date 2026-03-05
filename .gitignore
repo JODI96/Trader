@@ -1,5 +1,31 @@
-/ml/model/
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Logs
+*.log
 trader.log
+fetch_altcoins.log
+training_2023.log
+
+# Data & model
+/ml/model/
 data/
 analysis/
-training_2023.log
+
+# Secrets
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# State
+sim_state.json
