@@ -40,12 +40,6 @@ class SimPosition:
     close_time:  float = 0.0
     pnl_usdt:    float = 0.0   # net PnL after fees
     fee_usdt:    float = 0.0   # total round-trip fee paid
-    # Break-even stop: once price reaches be_trigger, SL slides to be_sl
-    # be_trigger = entry ± 1×SL_dist  (the 1:1 point)
-    # be_sl      = entry ± fee/unit   (exactly covers round-trip cost)
-    be_trigger:    float = 0.0
-    be_sl:         float = 0.0
-    breakeven_set: bool  = False
 
     @property
     def unrealized_pnl(self) -> float:
@@ -102,18 +96,6 @@ class SimulationMode:
             open_time   = signal.timestamp,
             leverage    = config.LEVERAGE,
         )
-
-        # Break-even stop levels:
-        #   be_trigger = entry ± 1×SL_dist  (when the trade is 1R in profit)
-        #   be_sl      = entry ± fee/unit    (close here → PnL exactly covers fees)
-        sl_dist = abs(signal.entry_price - signal.stop_loss)
-        fee_per_unit = signal.entry_price * config.FEE_TAKER / config.LEVERAGE
-        if signal.direction == "LONG":
-            pos.be_trigger = signal.entry_price + sl_dist
-            pos.be_sl      = signal.entry_price + fee_per_unit
-        else:
-            pos.be_trigger = signal.entry_price - sl_dist
-            pos.be_sl      = signal.entry_price - fee_per_unit
 
         self.positions.append(pos)
         logger.info(
@@ -288,20 +270,6 @@ class SimulationMode:
         pos = self.positions[0]
         self.current_price = candle.close
 
-        # Slide SL to break-even only if the original SL was NOT also reached
-        # in the same candle.  If both trigger and original SL are in range we
-        # cannot know intra-candle order; let the existing bullish/bearish logic
-        # below handle it so a down-first candle still counts as a real LOSS.
-        if not pos.breakeven_set:
-            if pos.direction == "LONG":
-                if candle.high >= pos.be_trigger and candle.low > pos.stop_loss:
-                    pos.stop_loss     = pos.be_sl
-                    pos.breakeven_set = True
-            else:
-                if candle.low <= pos.be_trigger and candle.high < pos.stop_loss:
-                    pos.stop_loss     = pos.be_sl
-                    pos.breakeven_set = True
-
         if pos.direction == "LONG":
             hit_sl = candle.low  <= pos.stop_loss
             hit_tp = candle.high >= pos.take_profit
@@ -309,14 +277,12 @@ class SimulationMode:
             hit_sl = candle.high >= pos.stop_loss
             hit_tp = candle.low  <= pos.take_profit
 
-        sl_outcome = "BE" if pos.breakeven_set else "LOSS"
-
         if hit_sl and hit_tp:
             # Both triggered — infer order from candle direction
             if candle.is_bullish:
                 # Low before high: LONG SL first; SHORT TP first → WIN
                 if pos.direction == "LONG":
-                    return self._close_position(pos, pos.stop_loss, sl_outcome)
+                    return self._close_position(pos, pos.stop_loss, "LOSS")
                 else:
                     return self._close_position(pos, pos.take_profit, "WIN")
             else:
@@ -324,27 +290,16 @@ class SimulationMode:
                 if pos.direction == "LONG":
                     return self._close_position(pos, pos.take_profit, "WIN")
                 else:
-                    return self._close_position(pos, pos.stop_loss, sl_outcome)
+                    return self._close_position(pos, pos.stop_loss, "LOSS")
         elif hit_tp:
             return self._close_position(pos, pos.take_profit, "WIN")
         elif hit_sl:
-            return self._close_position(pos, pos.stop_loss, sl_outcome)
+            return self._close_position(pos, pos.stop_loss, "LOSS")
 
         self._update_drawdown()
         return None
 
     def _check_exit(self, pos: SimPosition, price: float) -> Optional[SimPosition]:
-        # Slide SL to break-even once price reaches the 1:1 point
-        if not pos.breakeven_set:
-            triggered = (pos.direction == "LONG"  and price >= pos.be_trigger) or \
-                        (pos.direction == "SHORT" and price <= pos.be_trigger)
-            if triggered:
-                pos.stop_loss     = pos.be_sl
-                pos.breakeven_set = True
-                logger.info(
-                    f"[SIM] {pos.id} BE stop activated — SL moved to {pos.be_sl:.2f}"
-                )
-
         hit_sl = hit_tp = False
         if pos.direction == "LONG":
             hit_sl = price <= pos.stop_loss
@@ -356,9 +311,7 @@ class SimulationMode:
         if hit_tp:
             return self._close_position(pos, price, "WIN")
         if hit_sl:
-            # If SL was moved to break-even, closing here is a BE not a LOSS
-            outcome = "BE" if pos.breakeven_set else "LOSS"
-            return self._close_position(pos, price, outcome)
+            return self._close_position(pos, price, "LOSS")
         return None
 
     def _close_position(self, pos: SimPosition,
